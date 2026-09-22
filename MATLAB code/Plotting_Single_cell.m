@@ -1,0 +1,233 @@
+% Prompt user to select the file
+[fileName, filePath] = uigetfile('*.xlsx', 'Select the CSV file containing the data');
+if fileName == 0
+    disp('No file selected. Exiting script.');
+    return;
+end
+
+% Load the data from the selected file
+data = readtable(fullfile(filePath, fileName));
+[~, baseName, ~] = fileparts(fileName);
+
+% Extract relevant columns based on user description
+trackID_col = 1; % Assuming TrackID is in the 1st column
+timeindex_col = 2; % Assuming Timeindex is in the 2nd column
+nucClock_col = 6; % Nuc Clock intensity is in the 6th column
+xPosition_col = 7; % Position in X is in the 7th column
+erkActivity_col = 13; % ERK activity is in the 13th column
+
+
+% Prompt user to input the minimum number of timepoints for a track to be considered
+minTimepoints = input('Enter the minimum number of timepoints a TrackID must have to be considered: ');
+
+% Filter TrackIDs based on the minimum number of timepoints
+trackIDs = unique(data{:, trackID_col});
+validTrackIDs = zeros(length(trackIDs), 1);
+count = 1;
+
+for i = 1:length(trackIDs)
+    trackData = data(data{:, trackID_col} == trackIDs(i), :);
+    if height(trackData) >= minTimepoints
+        validTrackIDs(count) = trackIDs(i);
+        count = count + 1;
+    end
+end
+validTrackIDs = validTrackIDs(1:count-1);  % Trim unused preallocated space
+
+disp(['Filtered TrackIDs with more than ', num2str(minTimepoints), ' timepoints:']);
+disp(validTrackIDs);
+
+% Prompt user to input the starting timepoint
+startTimepoint = input('Enter the starting timepoint: ');
+
+% Prompt user to input the number of breakpoints
+numBreakpoints = input('Enter the number of breakpoints: ');
+
+% Prompt user to input the breakpoints
+breakpoints = [];
+for i = 1:numBreakpoints
+    breakpoints = [breakpoints; input(['Enter breakpoint ', num2str(i), ' (timepoint at which the break should be placed): '])];
+end
+
+
+
+% Initialize an array to store X positions
+xPositions = zeros(numBreakpoints + 1, 1);  % Add 1 for timepoint 1
+
+% Prompt user to input X positions (first X position for timepoint 1, the rest for breakpoints)
+disp('For timepoint 1 and the breakpoints, input X position:');
+xPositions(1) = input(['Enter X position for timepoint (in pixel) ' num2str(startTimepoint) ': ']);
+for i = 1:numBreakpoints
+    xPositions(i + 1) = input(['Enter X position for breakpoint (in pixel) ', num2str(breakpoints(i)), ': ']);
+end
+
+% Prompt user to input the window size
+windowSize = input('Enter the window size for all timepoints (in microns): ');
+xPositions = xPositions*0.3;
+% Filter valid TrackIDs based on the X positions and breakpoints using a for loop
+validTrackIDsFiltered = [];
+for i = 1:length(validTrackIDs)
+    trackData = data(data{:, trackID_col} == validTrackIDs(i), :);
+    isValid = false;
+    
+    % Check for timepoint 1
+    if any(trackData{:, timeindex_col} == startTimepoint & ...
+            trackData{:, xPosition_col} >= (xPositions(1) - windowSize) & ...
+            trackData{:, xPosition_col} <= (xPositions(1) + windowSize))
+        isValid = true;
+    end
+    
+    % Check for breakpoints
+    for j = 1:numBreakpoints
+        if any(trackData{:, timeindex_col} == breakpoints(j) & ...
+               trackData{:, xPosition_col} >= (xPositions(j + 1) - windowSize) & ...
+               trackData{:, xPosition_col} <= (xPositions(j + 1) + windowSize))
+            isValid = true;
+            break;
+        end
+    end
+    
+    if isValid
+        validTrackIDsFiltered = [validTrackIDsFiltered; validTrackIDs(i)];
+    end
+end
+
+% Update validTrackIDs to the filtered list
+validTrackIDs = validTrackIDsFiltered;
+
+% Create matrices to store NucClock intensity and ERK activity for each TrackID across timepoints
+allTimepoints = unique(data{:, timeindex_col});  % Get all unique timepoints
+nucClockMatrix = NaN(length(allTimepoints), length(validTrackIDs));  % Initialize matrix for NucClock intensity
+erkActivityMatrix = NaN(length(allTimepoints), length(validTrackIDs));  % Initialize matrix for ERK activity
+
+% Populate matrices with data for NucClock intensity and ERK activity
+for i = 1:length(validTrackIDs)
+    trackData = data(data{:, trackID_col} == validTrackIDs(i), :);
+    
+    % Fill the matrices for NucClock and ERK Activity
+    for j = 1:length(allTimepoints)
+        timepoint = allTimepoints(j);
+        nucClockIntensity = trackData{trackData{:, timeindex_col} == timepoint, nucClock_col};
+        erkActivity = trackData{trackData{:, timeindex_col} == timepoint, erkActivity_col};
+        
+        if ~isempty(nucClockIntensity)
+            nucClockMatrix(j, i) = nucClockIntensity;  % Store NucClock intensity
+        end
+        
+        if ~isempty(erkActivity)
+            erkActivityMatrix(j, i) = erkActivity;  % Store ERK activity
+        end
+    end
+end
+
+% Plotting NucClock intensity for all TrackIDs on one graph
+figure;
+hold on;
+
+for i = 1:length(validTrackIDs)
+    trackData = data(data{:, trackID_col} == validTrackIDs(i), :);  % Filter data for current TrackID
+    timepoints = trackData{:, timeindex_col};  % Extract timepoints
+    nucClockIntensity = trackData{:, nucClock_col};  % Extract NucClock intensity
+    
+    % Apply Savitzky-Golay smoothing (default parameters)
+    windowSizeSG = 5;  % Example window size for smoothing
+    polyOrderSG = 3;   % Example polynomial order for smoothing
+    nucClockIntensity = sgolayfilt(nucClockIntensity, polyOrderSG, windowSizeSG);
+    
+    % Break the lines at the user-specified breakpoints
+    breakIdx = ismember(timepoints, breakpoints);  % Find indices of breakpoints
+    nucClockIntensity(breakIdx(1:end-1)) = NaN;  % Set the next point to NaN for each breakpoint
+    
+    % Plot NucClock for all TrackIDs on one graph
+    plot(timepoints, nucClockIntensity, '-o', 'DisplayName', ['TrackID ' num2str(validTrackIDs(i))]);
+end
+
+hold off;
+xlabel('Timepoints');
+ylabel('NucClock Intensity');
+title('NucClock Intensity for all TrackIDs');
+legend('show');
+
+
+% Plotting erkActivity intensity for all TrackIDs on one graph
+figure;
+hold on;
+
+for i = 1:length(validTrackIDs)
+    trackData = data(data{:, trackID_col} == validTrackIDs(i), :);  % Filter data for current TrackID
+    timepoints = trackData{:, timeindex_col};  % Extract timepoints
+    erkActivity= trackData{:, erkActivity_col};  % Extract NucClock intensity
+    
+    % Apply Savitzky-Golay smoothing (default parameters)
+    windowSizeSG = 5;  % Example window size for smoothing
+    polyOrderSG = 3;   % Example polynomial order for smoothing
+    erkActivity = sgolayfilt(erkActivity, polyOrderSG, windowSizeSG);
+    
+    % Break the lines at the user-specified breakpoints
+    breakIdx = ismember(timepoints, breakpoints);  % Find indices of breakpoints
+    erkActivity(breakIdx(1:end-1)) = NaN;  % Set the next point to NaN for each breakpoint
+    
+    % Plot NucClock for all TrackIDs on one graph
+    plot(timepoints, erkActivity, '-o', 'DisplayName', ['TrackID ' num2str(validTrackIDs(i))]);
+end
+
+hold off;
+xlabel('Timepoints');
+ylabel('erkActivity ');
+title('erkActivity for all TrackIDs');
+legend('show');
+
+
+
+% Plotting the Median of NucClock Intensity Over Timepoints
+figure;
+
+% Compute the median and SEM for NucClock intensity
+medianNucClock = median(nucClockMatrix, 2,"omitmissing");
+semNucClock = std(nucClockMatrix, 0, 2,"omitmissing") / sqrt(sum(~isnan(nucClockMatrix), 2));  % SEM calculation
+
+% Smooth the median using Savitzky-Golay filter
+smoothedMedianNucClock = sgolayfilt(medianNucClock, polyOrderSG, windowSizeSG);
+smoothedSemNucClock = sgolayfilt(semNucClock, polyOrderSG, windowSizeSG);
+
+% Plot the smoothed median with SEM error bars
+errorbar(allTimepoints, smoothedMedianNucClock, smoothedSemNucClock, '-o');
+xlabel('Timepoints');
+ylabel('Median NucClock Intensity');
+title('Smoothed Median NucClock Intensity Over Timepoints');
+
+% Plotting the Median of ERK Activity Over Timepoints
+figure;
+
+% Compute the median and SEM for ERK activity
+medianErkActivity = median(erkActivityMatrix, 2,"omitmissing");
+semErkActivity = std(erkActivityMatrix, 0, 2,"omitmissing") / sqrt(sum(~isnan(erkActivityMatrix), 2));  % SEM calculation
+
+% Smooth the median using Savitzky-Golay filter
+smoothedMedianErkActivity = sgolayfilt(medianErkActivity, polyOrderSG, windowSizeSG);
+smoothedSemErkActivity = sgolayfilt(semErkActivity, polyOrderSG, windowSizeSG);
+
+% Plot the smoothed median with SEM error bars
+errorbar(allTimepoints, smoothedMedianErkActivity, smoothedSemErkActivity, '-x');
+xlabel('Timepoints');
+ylabel('Median ERK Activity');
+title('Smoothed Median ERK Activity Over Timepoints');
+
+
+% Construct output filenames
+nucClockMatrixFile = fullfile(filePath, ...
+    [baseName '_SingleCell_nucClock.csv']);
+
+erkActivityMatrixFile = fullfile(filePath, ...
+    [baseName '_SingleCell_erkActivity.csv']);
+
+% Save the matrices to CSV files
+writematrix(nucClockMatrix, nucClockMatrixFile);
+writematrix(erkActivityMatrix, erkActivityMatrixFile);
+
+disp('nucClockMatrix and erkActivityMatrix have been saved as CSV files.');
+
+
+
+
+

@@ -1,0 +1,179 @@
+clear all;
+% Prompt user to select the parent folder
+parentDir = uigetdir('', 'Select the parent folder');
+
+% Check if a directory was selected
+if parentDir == 0
+    disp('No folder selected. Exiting...');
+    return;
+end
+
+% Extract the name of the parent folder
+[parentPath, parentFolderName, ~] = fileparts(parentDir);
+disp(['Selected folder: ', parentFolderName]);
+
+% Initialize a list to store all matching file paths
+matchingCSVFiles = {};
+
+% Recursive function to search for files
+function collectedFiles = searchForFiles(currentDir)
+    % Initialize local list for this call
+    localFiles = {};
+
+    % Search for CSV files containing "raw" in the current directory
+     %csvFiles = dir(fullfile(currentDir, '*combined_bcgd_sub*.csv'));
+    csvFiles = dir(fullfile(currentDir, '*output_data*.csv'));
+    for k = 1:length(csvFiles)
+        localFiles{end+1} = fullfile(currentDir, csvFiles(k).name); %#ok<AGROW>
+    end
+
+    % Get all subfolders in the current directory
+    subfolders = dir(currentDir);
+    subfolders = subfolders([subfolders.isdir] & ~startsWith({subfolders.name}, '.')); % Ignore hidden and non-folders
+
+    % Recursively search in each subfolder
+    for j = 1:length(subfolders)
+        subfolderPath = fullfile(currentDir, subfolders(j).name);
+        subfolderFiles = searchForFiles(subfolderPath); % Recursive call
+        localFiles = [localFiles, subfolderFiles]; % Combine results
+    end
+
+    % Return collected files for this folder and subfolders
+    collectedFiles = localFiles;
+end
+
+
+% Start the recursive search
+matchingCSVFiles = searchForFiles(parentDir);
+
+% --- Generic natural sort of file names ---
+if ~isempty(matchingCSVFiles)
+    [~, rawNames, ~] = cellfun(@fileparts, matchingCSVFiles, 'UniformOutput', false);
+
+    % Extract first number found in each filename (if any)
+    fileNums = cellfun(@(x) str2double(regexp(x, '\d+', 'match', 'once')), rawNames);
+
+    % Replace NaN (for files with no numbers) with Inf so they go to the end
+    fileNums(isnan(fileNums)) = Inf;
+
+    % Sort by numbers first, then lexicographically for ties
+    [~, sortIdx] = sortrows([fileNums(:), (1:numel(fileNums))']);
+    matchingCSVFiles = matchingCSVFiles(sortIdx);
+end
+
+
+
+% Initialize a cell array to hold data side-by-side
+allData = {}; % Each cell contains data from one file
+fileNames = {}; % Array to hold file names
+maxRows = 0;  % To track the maximum number of rows across all files
+
+% Process all matching CSV files
+if ~isempty(matchingCSVFiles)
+    disp('Reading and combining the following CSV files containing "raw":');
+    for i = 1:length(matchingCSVFiles)
+        disp(matchingCSVFiles{i});
+        try
+            % Read the CSV file into a numeric array
+            data = readmatrix(matchingCSVFiles{i});
+            
+            % Store the data and file name
+            allData{i} = data; %#ok<AGROW>
+            [~, name, ext] = fileparts(matchingCSVFiles{i}); % Extract file name
+            fileNames{i} = [name, ext]; %#ok<AGROW>
+            
+            % Update the maximum number of rows
+            maxRows = max(maxRows, size(data, 1));
+        catch ME
+            warning(['Could not read file: ', matchingCSVFiles{i}, ' Error: ', ME.message]);
+            allData{i} = []; % Place an empty array for failed reads
+            fileNames{i} = 'ErrorFile'; %#ok<AGROW>
+        end
+    end
+
+    % Combine all files side-by-side into a single matrix
+    combinedData = nan(maxRows, 0); % Initialize with NaNs
+    for i = 1:length(allData)
+        data = allData{i};
+        if ~isempty(data)
+            % Pad with NaNs if necessary to match row size
+            numRows = size(data, 1);
+            if numRows < maxRows
+                data = [data; nan(maxRows - numRows, size(data, 2))];
+            end
+            % Concatenate side-by-side
+            combinedData = [combinedData, data]; %#ok<AGROW>
+        end
+    end
+
+    % Display the size of the combined matrix
+    disp('Successfully combined CSV files side-by-side into a matrix.');
+    disp(['Size of the combined matrix: ', num2str(size(combinedData, 1)), ' x ', num2str(size(combinedData, 2))]);
+
+else
+    disp('No CSV files containing "raw" found.');
+    combinedData = [];
+    fileNames = {};
+end
+
+Periods= combinedData(:, 2:6:end);
+phase= combinedData(:, 1:6:end);
+Amplitude= combinedData(:, 4:6:end);
+filtered_signals = combinedData(:, 2:2:end);
+% min= combinedData(:, 1:6:end);
+
+% Save file names and combined matrix
+outputFileName = 'CombinedDataAndFileNames.mat';
+save(outputFileName, 'combinedData', 'fileNames');
+
+colsToExtract = 2:2:size(combinedData, 2);
+extractedCols = combinedData(:, colsToExtract);
+
+COV = std(combinedData,0,1,'omitnan')./mean(combinedData,1,'omitnan');
+
+extractedColumns = combinedData(:, 3:6:end);
+
+ppERK_peak = combinedData(:, 1:2:end); % Extract odd-numbered columns
+bcat_peak = combinedData(:, 2:2:end); % Extract even-numbered columns
+% Assuming your original matrix is called "combinedData"
+[n, m] = size(combinedData);
+
+% Determine the indices of the columns to extract
+a = m / 9; % Calculate "a"
+columnIndices = reshape(1:m, 9, a); % Group columns into sets of 9
+
+% For ppERK: Select columns 1,2,3,10,11,12,...
+ppERKColumns = columnIndices(1:3, :); % Select the first 3 columns of each group
+ppERKColumns = ppERKColumns(:)'; % Flatten to a row vector
+ppERK = combinedData(:, ppERKColumns); % Extract the ppERK matrix
+
+% For bcat: Select columns 4,5,6,13,14,15,...
+bcatColumns = columnIndices(4:6, :); % Select the 4th to 6th columns of each group
+bcatColumns = bcatColumns(:)'; % Flatten to a row vector
+bcat = combinedData(:, bcatColumns); % Extract the bcat matrix
+
+Clock_Columns = columnIndices(7:9, :); % Select the 4th to 6th columns of each group
+Clock_Columns  = Clock_Columns (:)'; % Flatten to a row vector
+Clock = combinedData(:, Clock_Columns); % Extract the bcat matrix
+
+% Define the indices for every 3rd column starting from 1
+columns = 1:3:size(Clock, 2);
+
+% Define filter parameters
+order = 3;  % Polynomial order (adjust as needed)
+frameSize = 5;  % Frame size (must be odd, adjust as needed)
+
+% Apply Savitzky-Golay filter to selected columns
+Clock_filtered = Clock; % Create a copy to store filtered values
+Clock_filtered(:, columns) = sgolayfilt(Clock(:, columns), 1, 101);
+
+% bcat_total_Columns = columnIndices(10:12, :); % Select the 4th to 6th columns of each group
+% bcat_total_Columns = bcat_total_Columns(:)'; % Flatten to a row vector
+% bcat_total = combinedData(:, bcat_total_Columns); % Extract the bcat matrix
+
+colsToExtract = 2:2:size(combinedData, 2);
+extractedCols = combinedData(:, colsToExtract);
+
+
+
+

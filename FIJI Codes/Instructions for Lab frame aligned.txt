@@ -1,0 +1,4 @@
+Instructions for Lab frame aligned 
+1) While shifting to new somite, make sure to put a ROI for a time point just before it 
+2) Make sure to keep the end of the ROi at the tail tip( which earlier for psoter ior aligned would our starting point)
+3)

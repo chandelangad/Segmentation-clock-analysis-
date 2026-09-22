@@ -1,0 +1,64 @@
+%% Interpolate multi-sample time series with per-column valid ranges (non-zero)
+
+% --- Select Excel file ---
+[fileName, filePath] = uigetfile({'*.xlsx;*.xls'}, 'Select Excel file');
+if isequal(fileName,0), error('No file selected.'); end
+fullFileName = fullfile(filePath, fileName);
+
+% --- Read data ---
+% Assumes: col 1 = time, col 2:end = sample values, zeros mean "no data"
+data = readmatrix(fullFileName);
+
+time_old   = data(:,1);
+values_old = data(:,2:end);
+
+% --- New time step ---
+dt_new = 0.85; % minutes
+
+% --- Global new time axis (covers all columns) ---
+tmin = min(time_old, [], 'omitnan');
+tmax = max(time_old, [], 'omitnan');
+time_new = (tmin:dt_new:tmax)';
+
+% --- Preallocate output (fill outside valid range with 0) ---
+values_new = nan(numel(time_new), size(values_old,2));
+
+
+% Choose interpolation method: 'linear' (safe) or 'pchip' (smooth, shape-preserving)
+method = 'pchip';
+
+for c = 1:size(values_old,2)
+    y = values_old(:,c);
+
+    % Valid points are where y is non-zero and time is finite
+    valid = (y ~= 0) & isfinite(y) & isfinite(time_old);
+
+    if nnz(valid) < 2
+        % Not enough points to interpolate; leave as zeros
+        continue;
+    end
+
+    t_valid = time_old(valid);
+    y_valid = y(valid);
+
+    % If there are duplicate time points, keep unique (required by interp1)
+    [t_valid_u, ia] = unique(t_valid, 'stable');
+    y_valid_u = y_valid(ia);
+
+    % Column-specific interpolation window
+    t_start = min(t_valid_u);
+    t_end   = max(t_valid_u);
+
+    inRange = (time_new >= t_start) & (time_new <= t_end);
+
+    % Interpolate only within [t_start, t_end]
+    values_new(inRange, c) = interp1(t_valid_u, y_valid_u, time_new(inRange), method);
+end
+
+% --- Combine and save ---
+data_interpolated = [time_new, values_new];
+
+[outFile, outPath] = uiputfile('*.xlsx', 'Save interpolated data as');
+if ~isequal(outFile,0)
+    writematrix(data_interpolated, fullfile(outPath, outFile));
+end
